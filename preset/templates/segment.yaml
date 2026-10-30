@@ -1,0 +1,34 @@
+# 日段卡数据模板 —— 复制到 routes/<l0>/<l1>/<NN>-<from>-<to>/segment.yaml
+id: xx-00-01
+tier: L2
+name: 起点—终点
+era: ""
+history:
+  event: ""
+  sources: []
+  confidence: C
+geometry:
+  start: {name: "", lat: 0.0, lon: 0.0}
+  end: {name: "", lat: 0.0, lon: 0.0}
+  distance_km: 0.0
+  ascent_m: 0
+route:
+  difficulty: 2
+  season: ""
+  permission: ""
+tracks:
+  - platform: 2bulu          # 2bulu | foooooot | wikiloc | osm | self
+    id: ""
+    url: ""
+    author: ""
+    date: ""
+    distance_km: 0.0
+    ascent_m: 0
+    maturity: M2             # M1 | M2 | M3
+    note: ""
+safety:
+  retreat: []
+  water: []
+  signal_dead_zone: ""
+  exit: ""
+uncertainty: []
