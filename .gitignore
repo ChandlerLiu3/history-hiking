@@ -1,0 +1,12 @@
+# 依赖与本地缓存
+.cache/
+__pycache__/
+*.pyc
+
+# 六只脚导出结果（体积大，且是个人轨迹）
+data/liuzhijiao/
+
+# 编辑器
+.vscode/
+.idea/
+.DS_Store

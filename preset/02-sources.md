@@ -26,7 +26,7 @@
 |---|---|---|
 | OpenStreetMap | 步道、山路、垭口，可批量查询 | Overpass API；数据 ODbL，需署名 |
 | 两步路（2bulu） | 国内驴友实测轨迹 | App 内搜关键词；导出需登录 |
-| 六只脚（foooooot） | 老轨迹库 | 网页端已大半失效，仅 App |
+| 六只脚（foooooot） | 老轨迹库 | 网页端可访问但要登录；轨迹下载走 `/trip/{id}/downloads/`。批量导出见 `tools/liuzhijiao_export.py` |
 | Wikiloc | 可导出 GPX/KML，含航点 | 免费账号可下载 |
 
 **用法**：轨迹不是史料证据，是「这条路今天能走」的证明。用它验证可行性，不用它替代史料定位。
