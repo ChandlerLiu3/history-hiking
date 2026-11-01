@@ -8,12 +8,12 @@
 
 | 用途 | 地址 |
 |---|---|
-| 我的行程 | `/home/trip/my_trip/` |
+| 我的行程 | `/home/trip/`（或 `/home/trip/my_trip/`） |
 | 我的收藏 | `/home/trip/fav_trip/` |
-| 两者也挂在 | `/home/trip/` 的 tab 上 `#my_trip-1` / `#fav_trip-1` |
-| 轨迹下载页 | `/trip/<id>/downloads/` |
 | **GPX 文件** | `/trip/<id>/gps/file/?format=gpx` |
 | KML / 原始航迹 | `/trip/<id>/download/?fileformat=kml` · `?fileformat=orig` |
+
+两个列表是**独立地址**，页面上各写着自己有多少条（「我的行程(55)」「收藏的行程(62)」），脚本会用这个数字对账。`#my_trip-1` 那类 hash 是切地图视图用的，不是切列表，别点。
 
 老的个人主页 `/userindex/<uid>/trip/` 上是空的，别用。
 
@@ -52,7 +52,7 @@ data/liuzhijiao/
 └── manifest.csv id,标题,来源,文件,点数,状态
 ```
 
-`status`：`ok`（官方 GPX）、`ok(trackjson)`（自己拼的）、`skip(exists)`、`fail`。
+`status`：`ok`（GPX，有轨迹点）、`ok(trackjson)`（自己拼的）、`ok(empty)`（只有元数据、没有轨迹点，站上本身就没记录）、`skip(exists)`、`fail`。`points` 列是轨迹点个数，`0` 就是空壳。
 
 ## 退出码
 
@@ -67,14 +67,16 @@ data/liuzhijiao/
 | 参数 | 用途 |
 |---|---|
 | `--diagnose` | 只诊断不下载，存截图和 HTML |
+| `--collect-only` | 只收集编号写 `logs/ids.json`，不下载，最快 |
 | `--only my` / `--only fav` | 只导一边 |
 | `--limit 5` | 先下 5 条试水 |
+| `--dedupe` | 收藏里与我的行程重复的跳过（默认不跳，两边都下） |
 | `--my-url` / `--fav-url` | 手动指定列表页地址 |
 | `--force` | 覆盖已存在的文件 |
 
 ## 已知的坑
 
-- **收藏里可能混进自己的行程**：两个 tab 的卡片有时同时在 DOM 里。脚本会按行程编号去重，自己记录的优先归到 `my/`。跑完翻一下 `manifest.csv` 的 `source` 列就能确认。
+- **收藏和行程可能是同一批**：`/home/trip/` 的两个 tab 内容常常同时躺在 DOM 里。脚本只认「真正显示出来」的链接，但要是两边仍然完全一致，会自动存 `logs/05-fav-suspect.html` 告警。默认两边都下，不静默去重。
 - **翻页可能不全**：先试「下一页」链接，再试 tab 上的 `-2`/`-3` 序号锚点。如果 `manifest.csv` 条数明显少于 App 里看到的，把 `logs/run-*.log` 发我。
 - **某条 fail**：多半是私有行程或已删除。清单里标了，不影响其它条。
 

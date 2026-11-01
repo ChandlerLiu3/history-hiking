@@ -55,15 +55,15 @@ UA = (
 )
 
 # (地址模板, 中文名, tab 锚点前缀)。{uid} 只有兜底地址才用得上。
+# /home/trip/ 和 /home/trip/fav_trip/ 是两个独立地址（页面上就是两个普通链接，
+# 分别标着「我的行程(55)」「收藏的行程(62)」），不是 JS 面板。
+# 第三个字段是 tab 锚点：这里全部为 None —— 一点就会跳回 /home/trip/，反而抓错。
 MY_TARGETS = [
-    ("/home/trip/my_trip/", "我的行程", "#my_trip"),
-    ("/home/trip/", "我的行程", "#my_trip"),
-    ("/userindex/{uid}/trip/", "我的行程", None),
+    ("/home/trip/my_trip/", "我的行程", None),
+    ("/home/trip/", "我的行程", None),
 ]
 FAV_TARGETS = [
-    ("/home/trip/fav_trip/", "我的收藏", "#fav_trip"),
-    ("/home/trip/", "我的收藏", "#fav_trip"),
-    ("/userindex/{uid}/favorite/", "我的收藏", None),
+    ("/home/trip/fav_trip/", "我的收藏", None),
 ]
 
 # 轨迹文件入口。/trip/<id>/gps/file/?format=gpx 是实测可用的主入口，
@@ -101,8 +101,21 @@ def looks_like_html(body: bytes) -> bool:
     return head.startswith(b"<!doctype") or head.startswith(b"<html") or b"<head" in head[:200]
 
 
-def scrape_ids(page) -> list[str]:
-    """先看链接，链接里没有就退回整页 HTML 里的 /trip/<id>/。"""
+VISIBLE_TRIP_JS = """() => [...document.querySelectorAll('a[href*="/trip/"]')]
+    .filter(e => {
+        const r = e.getBoundingClientRect();
+        const st = getComputedStyle(e);
+        return r.width > 0 && r.height > 0 && st.visibility !== 'hidden' && st.display !== 'none';
+    })
+    .map(e => e.getAttribute('href'))"""
+
+
+def scrape_ids(page, visible_only: bool = False) -> list[str]:
+    """收行程编号。
+
+    visible_only=True 时只认真正显示出来的链接——两个 tab 的内容常常同时躺在
+    DOM 里，不区分可见性就会把「我的行程」当成「我的收藏」。
+    """
     ids: list[str] = []
     seen: set[str] = set()
 
@@ -114,10 +127,13 @@ def scrape_ids(page) -> list[str]:
                 ids.append(m.group(1))
 
     try:
-        take(page.eval_on_selector_all("a[href*='/trip/']", "els => els.map(e => e.getAttribute('href'))"))
+        if visible_only:
+            take(page.evaluate(VISIBLE_TRIP_JS))
+        else:
+            take(page.eval_on_selector_all("a[href*='/trip/']", "els => els.map(e => e.getAttribute('href'))"))
     except Exception:
         pass
-    if ids:
+    if ids or visible_only:
         return ids
     try:
         take(re.findall(r"/trip/(\d+)/", page.content()))
@@ -283,13 +299,13 @@ def find_uid(page) -> str | None:
     return None
 
 
-def settle(page, seconds: float = 6.0, expect_ids: bool = True) -> list[str]:
+def settle(page, seconds: float = 6.0, expect_ids: bool = True, visible_only: bool = False) -> list[str]:
     """等页面把行程卡片渲染出来：边滚边等，最多 seconds 秒。"""
     deadline = time.time() + seconds
     ids: list[str] = []
     while time.time() < deadline:
         page.wait_for_timeout(500)
-        ids = scrape_ids(page)
+        ids = scrape_ids(page, visible_only=visible_only)
         if ids and expect_ids:
             return ids
         if not expect_ids:
@@ -337,14 +353,30 @@ def read_list(page, url: str, tab: str | None, label: str) -> tuple[list[str], s
     if tab:
         activate_tab(page, tab, label)
 
-    ids = settle(page, 8.0)
+    # 页面上会写「我的行程(55)」「收藏的行程(62)」，拿它对账，抓少了立刻能看出来
+    declared = None
+    try:
+        m = re.search(r"(我的行程|收藏的行程)[（(](\d+)[）)]", page.content())
+        if m:
+            declared = int(m.group(2))
+            log(f"    页面标示「{m.group(1)}」{declared} 条")
+    except Exception:
+        pass
+
+    ids = settle(page, 8.0, visible_only=True)
+    if not ids:
+        ids = settle(page, 4.0)
+        if ids:
+            log("    （可见性筛选没出结果，退回全页抓取）")
     if not ids:
         for _ in range(6):
             page.mouse.wheel(0, 2500)
             page.wait_for_timeout(400)
-        ids = scrape_ids(page)
+        ids = scrape_ids(page, visible_only=True) or scrape_ids(page)
 
     log(f"    {url} -> {len(ids)} 条")
+    if declared is not None and len(ids) != declared:
+        log(f"    ! 对不上：页面说 {declared} 条，实际抓到 {len(ids)} 条")
     return ids, page.url
 
 
@@ -413,7 +445,7 @@ def paginate(page, ids: list[str], tab: str | None) -> list[str]:
 
         if not moved:
             break
-        for tid in scrape_ids(page):
+        for tid in (scrape_ids(page, visible_only=True) or scrape_ids(page)):
             if tid not in seen:
                 seen.add(tid)
                 ids.append(tid)
@@ -459,6 +491,24 @@ def check_body(resp, url: str) -> tuple[bytes | None, str]:
     if b"<kml" in head:
         return body, ".kml"
     return None, f"认不出格式（content-type={ctype or '空'}）"
+
+
+def count_points(body: bytes, ext: str) -> int:
+    if ext == ".gpx":
+        return body.count(b"<trkpt")
+    if ext == ".kml":
+        return body.count(b"<coordinates")
+    return 0
+
+
+def existing_ok(target: Path) -> bool:
+    """已有的文件里真有轨迹点才算数；空壳要重下。"""
+    try:
+        if target.stat().st_size < 200:
+            return False
+        return count_points(target.read_bytes(), target.suffix.lower()) >= 2
+    except Exception:
+        return False
 
 
 def download_one(page, ctx, tid: str, out_dir: Path, raw_dir: Path, force: bool) -> dict:
@@ -513,7 +563,8 @@ def download_one(page, ctx, tid: str, out_dir: Path, raw_dir: Path, force: bool)
     cands.sort(key=rank)
     reasons: list[str] = []
     seen: set[str] = set()
-    for url in cands[:10]:
+    best: tuple[bytes, str, int] | None = None
+    for url in cands[:12]:
         if url in seen:
             continue
         seen.add(url)
@@ -526,12 +577,26 @@ def download_one(page, ctx, tid: str, out_dir: Path, raw_dir: Path, force: bool)
         if body is None:
             reasons.append(f"{url} -> {info}")
             continue
+        npts = count_points(body, info)
         target = out_dir / f"{stem}{info}"
-        if target.exists() and not force and target.stat().st_size > 0:
-            row.update(file=str(target.relative_to(ROOT)), status="skip(exists)")
+        if npts >= 2:
+            if target.exists() and not force and existing_ok(target):
+                row.update(file=str(target.relative_to(ROOT)), points=npts, status="skip(exists)")
+                return row
+            target.write_bytes(body)
+            row.update(file=str(target.relative_to(ROOT)), points=npts, status="ok")
             return row
+        # 文件能下但里面没有轨迹点，先记着，继续试别的格式
+        reasons.append(f"{url} -> 0 个轨迹点")
+        if best is None:
+            best = (body, info, npts)
+
+    if best is not None:
+        body, info, npts = best
+        target = out_dir / f"{stem}{info}"
         target.write_bytes(body)
-        row.update(file=str(target.relative_to(ROOT)), status="ok")
+        row.update(file=str(target.relative_to(ROOT)), points=npts, status="ok(empty)")
+        log("  ! 各种格式都没有轨迹点，只存到元数据空壳")
         return row
 
     # 3) trackjson 兜底
@@ -633,6 +698,8 @@ def main() -> int:
     ap.add_argument("--force", action="store_true", help="覆盖已存在的文件")
     ap.add_argument("--headless", action="store_true", help="无头模式（登录仍需有头）")
     ap.add_argument("--diagnose", action="store_true", help="只诊断留证，不下载")
+    ap.add_argument("--collect-only", action="store_true", help="只收集编号并写 logs/ids.json，不下载")
+    ap.add_argument("--dedupe", action="store_true", help="收藏里与我的行程重复的跳过（默认不跳）")
     ap.add_argument("--probe", action="store_true", help="--diagnose 的旧名字")
     args = ap.parse_args()
     diagnose_mode = args.diagnose or args.probe
@@ -694,16 +761,29 @@ def main() -> int:
                 )
                 log(f"我的收藏共 {len(fav_ids)} 条")
 
-            # 两个 tab 的卡片可能同时在 DOM 里，会重复；自己记录的行程优先
+            if args.collect_only:
+                (LOG_DIR / "ids.json").write_text(
+                    json.dumps({"my": my_ids, "fav": fav_ids}, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                snap(page, "06-list-last")
+                log(f"我的行程 {len(my_ids)} 条：{my_ids[:10]}")
+                log(f"我的收藏 {len(fav_ids)} 条：{fav_ids[:10]}")
+                log(f"两边交集 {len(set(my_ids) & set(fav_ids))} 条；明细见 logs/ids.json")
+                return 0
+
+            if my_ids and fav_ids and set(my_ids) == set(fav_ids):
+                snap(page, "05-fav-suspect")
+                log("警告：收藏与我的行程完全一致，收藏页多半没真正切换，已存 logs/05-fav-suspect.html")
+
+            # 默认两边都下：要的是「收藏 + 记录」两份，重复由用户自己决定
             if my_ids and fav_ids:
                 overlap = set(my_ids) & set(fav_ids)
                 if overlap:
-                    log(f"有 {len(overlap)} 条两边都出现，按「我的行程」归档，收藏里跳过")
+                    log(f"两边重合 {len(overlap)} 条（默认两边都下，跳过重复用 --dedupe）")
+                if args.dedupe and overlap:
+                    log("按 --dedupe 跳过收藏里的重复项")
                     fav_ids = [t for t in fav_ids if t not in overlap]
-                if set(my_ids) == set(fav_ids):
-                    snap(page, "05-fav-suspect")
-                    log("注意：两边完全一致，很可能「我的收藏」tab 没真正切过去。")
-                    log("已存 logs/05-fav-suspect.html —— 把这个文件发我，我按真实结构修。")
 
             jobs = [(t, my_dir, "my") for t in my_ids] + [(t, fav_dir, "fav") for t in fav_ids]
 
